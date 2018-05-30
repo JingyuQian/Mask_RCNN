@@ -17,7 +17,6 @@ from collections import OrderedDict
 import multiprocessing
 import numpy as np
 import skimage.transform
-import tensorflow as tf
 import keras
 import keras.backend as K
 import keras.layers as KL
@@ -341,6 +340,55 @@ def log2_graph(x):
     """Implementatin of Log2. TF doesn't have a native implemenation."""
     return tf.log(x) / tf.log(2.0)
 
+############################################################
+# Two of my custom implementations
+############################################################
+def pyramidroialign(pool_shape, rois, meta, features):
+    boxes = rois
+    image_meta = meta
+    y1, x1, y2, x2 = tf.split(boxes, 4, axis=2)
+    h = y2 - y1
+    w = x2 - x1
+
+    image_shape = parse_image_meta_graph(image_meta)['image_shape'][0]
+
+    image_area = tf.cast(image_shape[0] * image_shape[1], tf.float32)
+    roi_level = log2_graph(tf.sqrt(h * w) / (224.0 / tf.sqrt(image_area)))
+    roi_level = tf.minimum(5, tf.maximum(
+        2, 4 + tf.cast(tf.round(roi_level), tf.int32)
+    ))
+    roi_level = tf.squeeze(roi_level, 2)
+
+    pooling = []
+    box_to_level = []
+    for i, level in enumerate(range(2, 6)):
+        ix = tf.where(tf.equal(roi_level, level))
+        level_boxes = tf.gather_nd(boxes, ix)
+
+        box_indices = tf.cast(ix[:, 0], tf.int32)
+
+        box_to_level.append(ix)
+
+        level_boxes = tf.stop_gradient(level_boxes)
+        box_indices = tf.stop_gradient(box_indices)
+
+        pooling.append(tf.image.crop_and_resize(
+            features[i], level_boxes, box_indices, pool_shape))
+
+    pooled = tf.concat(pooling, axis=0)
+
+    box_to_level = tf.concat(box_to_level, axis=0)
+    box_range = tf.expand_dims(tf.range(tf.shape(box_to_level)[0]), 1)
+    box_to_level = tf.concat([tf.cast(box_to_level, tf.int32), box_range], axis=1)
+
+    sorting_tensor = box_to_level[:, 0] * 100000 + box_to_level[:, 1]
+    ix = tf.nn.top_k(sorting_tensor, k=tf.shape(box_to_level)[0]).indices[::-1]
+    ix = tf.gather(box_to_level[:, 2], ix)
+    pooled = tf.gather(pooled, ix)
+
+    pooled = tf.expand_dims(pooled, 0)
+    return pooling, pooled
+
 
 class ROICheck(KE.Layer):
     def __init__(self, pool_shape, **kwargs):
@@ -353,10 +401,6 @@ class ROICheck(KE.Layer):
         # Image meta
         # Holds details about the image. See compose_image_meta()
         image_meta = inputs[1]
-
-        # Feature Maps. List of feature maps from different level of the
-        # feature pyramid. Each is [batch, height, width, channels]
-        feature_maps = inputs[2:]
 
         # Assign each ROI to a level in the pyramid based on the ROI area.
         y1, x1, y2, x2 = tf.split(boxes, 4, axis=2)
@@ -377,6 +421,9 @@ class ROICheck(KE.Layer):
 
     def compute_output_shape(self, input_shape):
         return input_shape[0][:2]
+############################################################
+# End custom implementations
+############################################################
 
 
 class PyramidROIAlign(KE.Layer):
@@ -436,7 +483,6 @@ class PyramidROIAlign(KE.Layer):
         for i, level in enumerate(range(2, 6)):
             ix = tf.where(tf.equal(roi_level, level))
             level_boxes = tf.gather_nd(boxes, ix)
-
             # Box indicies for crop_and_resize.
             box_indices = tf.cast(ix[:, 0], tf.int32)
 
@@ -474,6 +520,10 @@ class PyramidROIAlign(KE.Layer):
         # Sort box_to_level by batch then box index
         # TF doesn't have a way to sort by two columns, so merge them and sort.
         sorting_tensor = box_to_level[:, 0] * 100000 + box_to_level[:, 1]
+        ###################################
+        # sorting_tensor uses the original indexes. Sorting it gives us the original order from
+        # the largest to the smallest. So we need to reverse it by ::-1
+        ###################################
         ix = tf.nn.top_k(sorting_tensor, k=tf.shape(
             box_to_level)[0]).indices[::-1]
         ix = tf.gather(box_to_level[:, 2], ix)
@@ -481,10 +531,11 @@ class PyramidROIAlign(KE.Layer):
 
         # Re-add the batch dimension
         pooled = tf.expand_dims(pooled, 0)
+
         return pooled
 
     def compute_output_shape(self, input_shape):
-        return input_shape[0][:2] + self.pool_shape + (input_shape[2][-1], )
+        return input_shape[0][:2] + self.pool_shape + (input_shape[2][-1],)
 
 
 ############################################################
@@ -935,7 +986,7 @@ def build_rpn_model(anchor_stride, anchors_per_location, depth):
 ############################################################
 
 def fpn_classifier_graph(rois, feature_maps, image_meta,
-                         pool_size, num_classes, train_bn=True, mode="standard"):
+                         pool_size, num_classes, train_bn=True):
     """Builds the computation graph of the feature pyramid network classifier
     and regressor heads.
 
@@ -956,9 +1007,14 @@ def fpn_classifier_graph(rois, feature_maps, image_meta,
     """
     # ROI Pooling
     # Shape: [batch, num_boxes, pool_height, pool_width, channels]
+
+    # x = KL.Lambda(lambda x: pyramidroialign((pool_size, pool_size), rois))
+    # pre_x, x = pyramidroialign((pool_size, pool_size), rois, image_meta,feature_maps)
     x = PyramidROIAlign([pool_size, pool_size],
                         name="roi_align_classifier")([rois, image_meta] + feature_maps)
-    align = ROICheck([pool_size, pool_size], name="roi_check")([rois, image_meta] + feature_maps)
+    # print(x)
+    align = ROICheck([pool_size, pool_size], name="roi_check")([rois, image_meta])
+    # align = pre_x
     # Two 1024 FC layers (implemented with Conv2D for consistency)
     x = KL.TimeDistributed(KL.Conv2D(1024, (pool_size, pool_size), padding="valid"),
                            name="mrcnn_class_conv1")(x)
@@ -1049,7 +1105,7 @@ def smooth_l1_loss(y_true, y_pred):
     """
     diff = K.abs(y_true - y_pred)
     less_than_one = K.cast(K.less(diff, 1.0), "float32")
-    loss = (less_than_one * 0.5 * diff**2) + (1 - less_than_one) * (diff - 0.5)
+    loss = (less_than_one * 0.5 * diff ** 2) + (1 - less_than_one) * (diff - 0.5)
     return loss
 
 
@@ -1105,7 +1161,7 @@ def rpn_bbox_loss_graph(config, target_bbox, rpn_match, rpn_bbox):
     #       to reduce code duplication
     diff = K.abs(target_bbox - rpn_bbox)
     less_than_one = K.cast(K.less(diff, 1.0), "float32")
-    loss = (less_than_one * 0.5 * diff**2) + (1 - less_than_one) * (diff - 0.5)
+    loss = (less_than_one * 0.5 * diff ** 2) + (1 - less_than_one) * (diff - 0.5)
 
     loss = K.switch(tf.size(loss) > 0, K.mean(loss), tf.constant(0.0))
     return loss
@@ -2142,13 +2198,13 @@ class MaskRCNN():
         #     name="ROI",
         #     config=config)([rpn_class, rpn_bbox, anchors])
 
-        input_rpn_rois = KL.Input(shape=(proposal_count, None), name="input_rpn_rois", dtype=tf.float32)
+        input_rpn_rois = KL.Input(shape=(proposal_count, 4), name="input_rpn_rois", dtype=tf.float32)
         # Network Heads
         # Proposal classifier and BBox regressor heads
         mrcnn_class_logits, mrcnn_class, mrcnn_bbox, align = \
             fpn_classifier_graph(input_rpn_rois, mrcnn_feature_maps, input_image_meta,
                                  config.POOL_SIZE, config.NUM_CLASSES,
-                                 train_bn=config.TRAIN_BN, mode="shortcut")
+                                 train_bn=config.TRAIN_BN)
 
         # Detections
         # output is [batch, num_detections, (y1, x1, y2, x2, class_id, score)] in
