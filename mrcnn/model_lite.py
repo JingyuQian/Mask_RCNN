@@ -192,7 +192,7 @@ def conv_block(input_tensor, kernel_size, filters, stage, block,
     x = KL.Activation('relu')(x)
 
     x = KL.Conv2D(nb_filter3, (1, 1), name=conv_name_base +
-                  '2c', use_bias=use_bias)(x)
+                                           '2c', use_bias=use_bias)(x)
     x = BatchNorm(name=bn_name_base + '2c')(x, training=train_bn)
 
     shortcut = KL.Conv2D(nb_filter3, (1, 1), strides=strides,
@@ -435,39 +435,6 @@ def log2_graph(x):
     return tf.log(x) / tf.log(2.0)
 
 
-class ROICheck(KE.Layer):
-    def __init__(self, pool_shape, **kwargs):
-        super(ROICheck, self).__init__(**kwargs)
-        self.pool_shape = pool_shape
-
-    def call(self, inputs, **kwargs):
-        # Crop boxes [batch, num_boxes, (y1, x1, y2, x2)] in normalized coords
-        boxes = inputs[0]
-        # Image meta
-        # Holds details about the image. See compose_image_meta()
-        image_meta = inputs[1]
-
-        # Assign each ROI to a level in the pyramid based on the ROI area.
-        y1, x1, y2, x2 = tf.split(boxes, 4, axis=2)
-        h = y2 - y1
-        w = x2 - x1
-        # Use shape of first image. Images in a batch must have the same size.
-        image_shape = parse_image_meta_graph(image_meta)['image_shape'][0]
-        # Equation 1 in the Feature Pyramid Networks paper. Account for
-        # the fact that our coordinates are normalized here.
-        # e.g. a 224x224 ROI (in pixels) maps to P4
-        image_area = tf.cast(image_shape[0] * image_shape[1], tf.float32)
-        roi_level = log2_graph(tf.sqrt(h * w) / (224.0 / tf.sqrt(image_area)))
-        roi_level = tf.minimum(5, tf.maximum(
-            2, 4 + tf.cast(tf.round(roi_level), tf.int32)))
-        roi_level = tf.squeeze(roi_level, 2)
-
-        return roi_level
-
-    def compute_output_shape(self, input_shape):
-        return input_shape[0][:2]
-
-
 class PyramidROIAlign(KE.Layer):
     """Implements ROI Pooling on multiple levels of the feature pyramid.
 
@@ -544,6 +511,7 @@ class PyramidROIAlign(KE.Layer):
             # Here we use the simplified approach of a single value per bin,
             # which is how it's done in tf.crop_and_resize()
             # Result: [batch * num_boxes, pool_height, pool_width, channels]
+            print(feature_maps[i])
             pooled.append(tf.image.crop_and_resize(
                 feature_maps[i], level_boxes, box_indices, self.pool_shape,
                 method="bilinear"))
@@ -585,8 +553,6 @@ def fpn_classifier_graph(rois, feature_maps, image_meta,
                          pool_size, num_classes, train_bn=True):
     x = PyramidROIAlign([pool_size, pool_size],
                         name="roi_align_classifier")([rois, image_meta] + feature_maps)
-    align = ROICheck([pool_size, pool_size],
-                     name="roi_check")([rois, image_meta])
     # Two 1024 FC layers (implemented with Conv2D for consistency)
     x = KL.TimeDistributed(KL.Conv2D(1024, (pool_size, pool_size), padding="valid"),
                            name="mrcnn_class_conv1")(x)
@@ -614,7 +580,7 @@ def fpn_classifier_graph(rois, feature_maps, image_meta,
     # Reshape to [batch, boxes, num_classes, (dy, dx, log(dh), log(dw))]
     mrcnn_bbox = KL.Reshape((-1, num_classes, 4), name="mrcnn_bbox")(x)
 
-    return mrcnn_class_logits, mrcnn_probs, mrcnn_bbox, align
+    return mrcnn_class_logits, mrcnn_probs, mrcnn_bbox
 
 
 #################################
@@ -909,7 +875,7 @@ class MaskRCNN(object):
             name="ROI",
             config=config)([rpn_class, rpn_bbox, anchors])
 
-        mrcnn_class_logits, mrcnn_class, mrcnn_bbox, align = \
+        mrcnn_class_logits, mrcnn_class, mrcnn_bbox = \
             fpn_classifier_graph(rpn_rois,
                                  mrcnn_feature_maps,
                                  input_image_meta,
@@ -930,7 +896,7 @@ class MaskRCNN(object):
 
         model = KM.Model(inputs=[input_image, input_image_meta, input_anchors],
                          outputs=[detections, mrcnn_class, mrcnn_mask,
-                                  mrcnn_class_logits, rpn_rois, align],
+                                  mrcnn_class_logits, rpn_rois],
                          name="mask_rcnn")
         if config.GPU_COUNT > 1:
             from mrcnn.parallel_model import ParallelModel
@@ -965,12 +931,12 @@ class MaskRCNN(object):
         P5 = KL.Conv2D(256, (1, 1), name='fpn_c5p5')(C5)
         P4 = KL.Add(name="fpn_p4add")([
             KL.UpSampling2D(size=(2, 2), name="fpn_p5upsampled")(P5),
-            KL.Conv2D(256, (1, 1), name='sfpn_c4p4')(C4)])
+            KL.Conv2D(256, (1, 1), name='fpn_c4p4')(C4)])
         P3 = KL.Add(name="fpn_p3add")([
             KL.UpSampling2D(size=(2, 2), name="fpn_p4upsampled")(P4),
-            KL.Conv2D(256, (1, 1), name='sfpn_c3p3')(C3)])
-        P2 = KL.Add(name="sfpn_p2add")([
-            KL.UpSampling2D(size=(2, 2), name="sfpn_p3upsampled")(P3),
+            KL.Conv2D(256, (1, 1), name='fpn_c3p3')(C3)])
+        P2 = KL.Add(name="fpn_p2add")([
+            KL.UpSampling2D(size=(2, 2), name="fpn_p3upsampled")(P3),
             KL.Conv2D(256, (1, 1), name='fpn_c2p2')(C2)])
         # Attach 3x3 conv to all P layers to get the final feature maps.
         P2 = KL.Conv2D(256, (3, 3), padding="SAME", name="fpn_p2")(P2)
@@ -986,7 +952,7 @@ class MaskRCNN(object):
             shape=(proposal_count, 4), name="input_rpn_rois", dtype=tf.float32)
         # Network Heads
         # Proposal classifier and BBox regressor heads
-        mrcnn_class_logits, mrcnn_class, mrcnn_bbox, align = \
+        mrcnn_class_logits, mrcnn_class, mrcnn_bbox = \
             fpn_classifier_graph(input_rpn_rois,
                                  mrcnn_feature_maps,
                                  input_image_meta,
@@ -1015,7 +981,7 @@ class MaskRCNN(object):
                                   mrcnn_class,
                                   mrcnn_mask,
                                   mrcnn_class_logits,
-                                  input_rpn_rois, align],
+                                  input_rpn_rois],
                          name='mask_rcnn')
 
         # Add multi-GPU support.
@@ -1050,7 +1016,7 @@ class MaskRCNN(object):
             anchors, (self.config.BATCH_SIZE,) + anchors.shape)
 
         # Run object detection
-        detections, mrcnn_class, mrcnn_mask, mrcnn_class_logits, rpn_rois, align_result = \
+        detections, mrcnn_class, mrcnn_mask, mrcnn_class_logits, rpn_rois = \
             self.model.predict(
                 [molded_images, image_metas, anchors], verbose=0)
         # Process detections
@@ -1066,12 +1032,12 @@ class MaskRCNN(object):
                 "scores": final_scores,
                 "masks": final_masks,
             })
-        return results, rpn_rois, align_result
+        return results, rpn_rois
 
     def detect_shortcut(self, images, rpn_rois):
         molded_images, image_metas, windows = self.mold_inputs(images)
 
-        detections, mrcnn_class, mrcnn_mask, mrcnn_class_logits, rpn_roi, align_result = \
+        detections, mrcnn_class, mrcnn_mask, mrcnn_class_logits, rpn_roi = \
             self.model_shortcut.predict(
                 [molded_images, image_metas, rpn_rois], verbose=0)
         results = []
@@ -1086,7 +1052,7 @@ class MaskRCNN(object):
                 "scores": final_scores,
                 "masks": final_masks,
             })
-        return results, rpn_roi, align_result
+        return results, rpn_roi
 
     def mold_inputs(self, images):
         """Takes a list of images and modifies them to the format expected

@@ -340,91 +340,6 @@ def log2_graph(x):
     """Implementatin of Log2. TF doesn't have a native implemenation."""
     return tf.log(x) / tf.log(2.0)
 
-############################################################
-# Two of my custom implementations
-############################################################
-def pyramidroialign(pool_shape, rois, meta, features):
-    boxes = rois
-    image_meta = meta
-    y1, x1, y2, x2 = tf.split(boxes, 4, axis=2)
-    h = y2 - y1
-    w = x2 - x1
-
-    image_shape = parse_image_meta_graph(image_meta)['image_shape'][0]
-
-    image_area = tf.cast(image_shape[0] * image_shape[1], tf.float32)
-    roi_level = log2_graph(tf.sqrt(h * w) / (224.0 / tf.sqrt(image_area)))
-    roi_level = tf.minimum(5, tf.maximum(
-        2, 4 + tf.cast(tf.round(roi_level), tf.int32)
-    ))
-    roi_level = tf.squeeze(roi_level, 2)
-
-    pooling = []
-    box_to_level = []
-    for i, level in enumerate(range(2, 6)):
-        ix = tf.where(tf.equal(roi_level, level))
-        level_boxes = tf.gather_nd(boxes, ix)
-
-        box_indices = tf.cast(ix[:, 0], tf.int32)
-
-        box_to_level.append(ix)
-
-        level_boxes = tf.stop_gradient(level_boxes)
-        box_indices = tf.stop_gradient(box_indices)
-
-        pooling.append(tf.image.crop_and_resize(
-            features[i], level_boxes, box_indices, pool_shape))
-
-    pooled = tf.concat(pooling, axis=0)
-
-    box_to_level = tf.concat(box_to_level, axis=0)
-    box_range = tf.expand_dims(tf.range(tf.shape(box_to_level)[0]), 1)
-    box_to_level = tf.concat([tf.cast(box_to_level, tf.int32), box_range], axis=1)
-
-    sorting_tensor = box_to_level[:, 0] * 100000 + box_to_level[:, 1]
-    ix = tf.nn.top_k(sorting_tensor, k=tf.shape(box_to_level)[0]).indices[::-1]
-    ix = tf.gather(box_to_level[:, 2], ix)
-    pooled = tf.gather(pooled, ix)
-
-    pooled = tf.expand_dims(pooled, 0)
-    return pooling, pooled
-
-
-class ROICheck(KE.Layer):
-    def __init__(self, pool_shape, **kwargs):
-        super(ROICheck, self).__init__(**kwargs)
-        self.pool_shape = pool_shape
-
-    def call(self, inputs):
-        # Crop boxes [batch, num_boxes, (y1, x1, y2, x2)] in normalized coords
-        boxes = inputs[0]
-        # Image meta
-        # Holds details about the image. See compose_image_meta()
-        image_meta = inputs[1]
-
-        # Assign each ROI to a level in the pyramid based on the ROI area.
-        y1, x1, y2, x2 = tf.split(boxes, 4, axis=2)
-        h = y2 - y1
-        w = x2 - x1
-        # Use shape of first image. Images in a batch must have the same size.
-        image_shape = parse_image_meta_graph(image_meta)['image_shape'][0]
-        # Equation 1 in the Feature Pyramid Networks paper. Account for
-        # the fact that our coordinates are normalized here.
-        # e.g. a 224x224 ROI (in pixels) maps to P4
-        image_area = tf.cast(image_shape[0] * image_shape[1], tf.float32)
-        roi_level = log2_graph(tf.sqrt(h * w) / (224.0 / tf.sqrt(image_area)))
-        roi_level = tf.minimum(5, tf.maximum(
-            2, 4 + tf.cast(tf.round(roi_level), tf.int32)))
-        roi_level = tf.squeeze(roi_level, 2)
-
-        return roi_level
-
-    def compute_output_shape(self, input_shape):
-        return input_shape[0][:2]
-############################################################
-# End custom implementations
-############################################################
-
 
 class PyramidROIAlign(KE.Layer):
     """Implements ROI Pooling on multiple levels of the feature pyramid.
@@ -1012,9 +927,6 @@ def fpn_classifier_graph(rois, feature_maps, image_meta,
     # pre_x, x = pyramidroialign((pool_size, pool_size), rois, image_meta,feature_maps)
     x = PyramidROIAlign([pool_size, pool_size],
                         name="roi_align_classifier")([rois, image_meta] + feature_maps)
-    # print(x)
-    align = ROICheck([pool_size, pool_size], name="roi_check")([rois, image_meta])
-    # align = pre_x
     # Two 1024 FC layers (implemented with Conv2D for consistency)
     x = KL.TimeDistributed(KL.Conv2D(1024, (pool_size, pool_size), padding="valid"),
                            name="mrcnn_class_conv1")(x)
@@ -1040,7 +952,7 @@ def fpn_classifier_graph(rois, feature_maps, image_meta,
     # Reshape to [batch, boxes, num_classes, (dy, dx, log(dh), log(dw))]
     mrcnn_bbox = KL.Reshape((-1, num_classes, 4), name="mrcnn_bbox")(x)
 
-    return mrcnn_class_logits, mrcnn_probs, mrcnn_bbox, align
+    return mrcnn_class_logits, mrcnn_probs, mrcnn_bbox
 
 
 def build_fpn_mask_graph(rois, feature_maps, image_meta,
@@ -2134,96 +2046,6 @@ class MaskRCNN():
             model = KM.Model(inputs=[input_image, input_image_meta, input_anchors],
                              outputs=[detections, mrcnn_class, mrcnn_mask, mrcnn_class_logits, rpn_rois,
                                       align], name='mask_rcnn')
-
-        # Add multi-GPU support.
-        if config.GPU_COUNT > 1:
-            from mrcnn.parallel_model import ParallelModel
-            model = ParallelModel(model, config.GPU_COUNT)
-
-        return model
-
-    def build_shortcut(self, mode, config):
-        """
-        Code adopted from original build function.
-        The current version only supports inference mode.
-        Any training related vars are deleted to keep things simple.
-        :param mode:
-        :param config:
-        :return:
-        """
-        assert mode == 'inference'
-
-        # Image size must be dividable by 2 multiple times
-        h, w = config.IMAGE_SHAPE[:2]
-        if h / 2 ** 6 != int(h / 2 ** 6) or w / 2 ** 6 != int(w / 2 ** 6):
-            raise Exception("Image size must be dividable by 2 at least 6 times "
-                            "to avoid fractions when downscaling and upscaling."
-                            "For example, use 256, 320, 384, 448, 512, ... etc. ")
-
-        # Inputs
-        input_image = KL.Input(
-            shape=[None, None, 3], name="input_image")
-        input_image_meta = KL.Input(shape=[config.IMAGE_META_SIZE],
-                                    name="input_image_meta")
-
-        # Build the shared convolutional layers.
-        # Bottom-up Layers
-        # Returns a list of the last layers of each stage, 5 in total.
-        # Don't create the thead (stage 5), so we pick the 4th item in the list.
-        _, C2, C3, C4, C5 = resnet_graph(input_image, config.BACKBONE,
-                                         stage5=True, train_bn=config.TRAIN_BN)
-        # Top-down Layers
-        P5 = KL.Conv2D(256, (1, 1), name='fpn_c5p5')(C5)
-        P4 = KL.Add(name="fpn_p4add")([
-            KL.UpSampling2D(size=(2, 2), name="fpn_p5upsampled")(P5),
-            KL.Conv2D(256, (1, 1), name='sfpn_c4p4')(C4)])
-        P3 = KL.Add(name="fpn_p3add")([
-            KL.UpSampling2D(size=(2, 2), name="fpn_p4upsampled")(P4),
-            KL.Conv2D(256, (1, 1), name='sfpn_c3p3')(C3)])
-        P2 = KL.Add(name="sfpn_p2add")([
-            KL.UpSampling2D(size=(2, 2), name="sfpn_p3upsampled")(P3),
-            KL.Conv2D(256, (1, 1), name='fpn_c2p2')(C2)])
-        # Attach 3x3 conv to all P layers to get the final feature maps.
-        P2 = KL.Conv2D(256, (3, 3), padding="SAME", name="fpn_p2")(P2)
-        P3 = KL.Conv2D(256, (3, 3), padding="SAME", name="fpn_p3")(P3)
-        P4 = KL.Conv2D(256, (3, 3), padding="SAME", name="fpn_p4")(P4)
-        P5 = KL.Conv2D(256, (3, 3), padding="SAME", name="fpn_p5")(P5)
-
-        mrcnn_feature_maps = [P2, P3, P4, P5]
-
-        proposal_count = config.POST_NMS_ROIS_INFERENCE
-        # rpn_rois = ProposalLayer(
-        #     proposal_count=proposal_count,
-        #     nms_threshold=config.RPN_NMS_THRESHOLD,
-        #     name="ROI",
-        #     config=config)([rpn_class, rpn_bbox, anchors])
-
-        input_rpn_rois = KL.Input(shape=(proposal_count, 4), name="input_rpn_rois", dtype=tf.float32)
-        # Network Heads
-        # Proposal classifier and BBox regressor heads
-        mrcnn_class_logits, mrcnn_class, mrcnn_bbox, align = \
-            fpn_classifier_graph(input_rpn_rois, mrcnn_feature_maps, input_image_meta,
-                                 config.POOL_SIZE, config.NUM_CLASSES,
-                                 train_bn=config.TRAIN_BN)
-
-        # Detections
-        # output is [batch, num_detections, (y1, x1, y2, x2, class_id, score)] in
-        # normalized coordinates
-        detections = DetectionLayer(config, name="mrcnn_detection")(
-            [input_rpn_rois, mrcnn_class, mrcnn_bbox, input_image_meta])
-
-        # Create masks for detections
-        detection_boxes = KL.Lambda(lambda x: x[..., :4])(detections)
-        mrcnn_mask = build_fpn_mask_graph(detection_boxes, mrcnn_feature_maps,
-                                          input_image_meta,
-                                          config.MASK_POOL_SIZE,
-                                          config.NUM_CLASSES,
-                                          train_bn=config.TRAIN_BN)
-
-        model = KM.Model(inputs=[input_image, input_image_meta, input_rpn_rois],
-                         outputs=[detections, mrcnn_class, mrcnn_mask,
-                                  mrcnn_class_logits, input_rpn_rois, align],
-                         name='mask_rcnn')
 
         # Add multi-GPU support.
         if config.GPU_COUNT > 1:
