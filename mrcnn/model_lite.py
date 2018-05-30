@@ -4,8 +4,22 @@ import keras.engine as KE
 import keras.models as KM
 import tensorflow as tf
 import numpy as np
-
+import math
 from mrcnn import utils
+
+
+def compute_backbone_shapes(config, image_shape):
+    """Computes the width and height of each stage of the backbone network.
+
+    Returns:
+        [N, (height, width)]. Where N is the number of stages
+    """
+    # Currently supports ResNet only
+    assert config.BACKBONE in ["resnet50", "resnet101"]
+    return np.array(
+        [[int(math.ceil(image_shape[0] / stride)),
+          int(math.ceil(image_shape[1] / stride))]
+         for stride in config.BACKBONE_STRIDES])
 
 
 def compose_image_meta(image_id, original_image_shape, image_shape,
@@ -64,6 +78,7 @@ def mold_image(images, config):
 def unmold_image(normalized_images, config):
     """Takes a image normalized with mold() and returns the original."""
     return (normalized_images + config.MEAN_PIXEL).astype(np.uint8)
+
 
 #################################
 #       Resnet essentials       #
@@ -170,11 +185,12 @@ def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
                        block='a', train_bn=train_bn)
         x = identity_block(x, 3, [512, 512, 2048],
                            stage=5, block='b', train_bn=train_bn)
-        C5 = x = identity_block(
+        C5 = identity_block(
             x, 3, [512, 512, 2048], stage=5, block='c', train_bn=train_bn)
     else:
         C5 = None
     return [C1, C2, C3, C4, C5]
+
 
 #################################
 #      End Resnet essentials    #
@@ -278,7 +294,7 @@ class ProposalLayer(KE.Layer):
         self.proposal_count = proposal_count
         self.nms_threshold = nms_threshold
 
-    def call(self, inputs):
+    def call(self, inputs, **kwargs):
         # Box Scores. Use the foreground class confidence. [Batch, num_rois, 1]
         scores = inputs[0][:, :, 1]
         # Box deltas [batch, num_rois, 4]
@@ -339,6 +355,7 @@ class ProposalLayer(KE.Layer):
     def compute_output_shape(self, input_shape):
         return None, self.proposal_count, 4
 
+
 #################################
 #      End Proposal Layer       #
 #################################
@@ -377,7 +394,7 @@ class PyramidROIAlign(KE.Layer):
         super(PyramidROIAlign, self).__init__(**kwargs)
         self.pool_shape = tuple(pool_shape)
 
-    def call(self, inputs):
+    def call(self, inputs, **kwargs):
         # Crop boxes [batch, num_boxes, (y1, x1, y2, x2)] in normalized coords
         boxes = inputs[0]
 
@@ -468,13 +485,12 @@ class PyramidROIAlign(KE.Layer):
 
 def fpn_classifier_graph(rois, feature_maps, image_meta,
                          pool_size, num_classes, train_bn=True):
-
     x = PyramidROIAlign([pool_size, pool_size],
                         name="roi_align_classifier")([rois, image_meta] + feature_maps)
     # print(x)
     # align = ROICheck([pool_size, pool_size],
     #                  name="roi_check")([rois, image_meta])
-    # align = pre_x
+    align = x
     # Two 1024 FC layers (implemented with Conv2D for consistency)
     x = KL.TimeDistributed(KL.Conv2D(1024, (pool_size, pool_size), padding="valid"),
                            name="mrcnn_class_conv1")(x)
@@ -502,7 +518,7 @@ def fpn_classifier_graph(rois, feature_maps, image_meta,
     # Reshape to [batch, boxes, num_classes, (dy, dx, log(dh), log(dw))]
     mrcnn_bbox = KL.Reshape((-1, num_classes, 4), name="mrcnn_bbox")(x)
 
-    return mrcnn_class_logits, mrcnn_probs, mrcnn_bbox
+    return mrcnn_class_logits, mrcnn_probs, mrcnn_bbox, align
 
 
 #################################
@@ -554,8 +570,6 @@ def refine_detections_graph(rois, probs, deltas, window, config):
         rois, deltas_specific * config.BBOX_STD_DEV)
     # Clip boxes to image window
     refined_rois = clip_boxes_graph(refined_rois, window)
-
-    # TODO: Filter out boxes with zero area
 
     # Filter out background boxes
     keep = tf.where(class_ids > 0)[:, 0]
@@ -638,7 +652,7 @@ class DetectionLayer(KE.Layer):
         super(DetectionLayer, self).__init__(**kwargs)
         self.config = config
 
-    def call(self, inputs):
+    def call(self, inputs, **kwargs):
         rois = inputs[0]
         mrcnn_class = inputs[1]
         mrcnn_bbox = inputs[2]
@@ -667,7 +681,7 @@ class DetectionLayer(KE.Layer):
             [self.config.BATCH_SIZE, self.config.DETECTION_MAX_INSTANCES, 6])
 
     def compute_output_shape(self, input_shape):
-        return (None, self.config.DETECTION_MAX_INSTANCES, 6)
+        return None, self.config.DETECTION_MAX_INSTANCES, 6
 
 
 #################################
@@ -719,22 +733,23 @@ def build_fpn_mask_graph(rois, feature_maps, image_meta,
                            name="mrcnn_mask")(x)
     return x
 
+
 #################################
 #      End Mask head            #
 #################################
 
 
-class MaskRCNN():
+class MaskRCNN(object):
 
-    def __init__(self, mode, config, model_dir):
-        assert mode in ['training', 'inference']
-        self.mode = mode
+    def __init__(self, config, model_dir):
+        # assert mode in ['training', 'inference']
+        # self.mode = mode
         self.config = config
         self.model_dir = model_dir
-        self.model = self.build(mode=mode, config=config)
-        self.model_shortcut = self.build_shortcut(mode=mode, config=config)
+        self.model = self.build(config=config)
+        self.model_shortcut = self.build_shortcut(config=config)
 
-    def build(self, mode, config):
+    def build(self, config):
         h, w = config.IMAGE_SHAPE[:2]
         if h / 2 ** 6 != (h / 2 ** 6) or w / 2 ** 6 != int(w / w ** 6):
             raise Exception("Image size must be dividable by 2 at least"
@@ -826,8 +841,8 @@ class MaskRCNN():
 
         return model
 
-    def build_shortcut(self, mode, config):
-        assert mode == 'inference'
+    def build_shortcut(self, config):
+        # assert mode == 'inference'
 
         # Image size must be dividable by 2 multiple times
         h, w = config.IMAGE_SHAPE[:2]
@@ -934,13 +949,12 @@ class MaskRCNN():
         # Anchors
         anchors = self.get_anchors(image_shape)
         # Duplicate across the batch dimension because Keras requires it
-        # TODO: can this be optimized to avoid duplicating the anchors?
         anchors = np.broadcast_to(
             anchors, (self.config.BATCH_SIZE,) + anchors.shape)
 
         # Run object detection
         detections, mrcnn_class, mrcnn_mask, mrcnn_class_logits, rpn_rois, align_result = \
-            self.keras_model.predict(
+            self.model.predict(
                 [molded_images, image_metas, anchors], verbose=0)
         # Process detections
         results = []
@@ -961,7 +975,7 @@ class MaskRCNN():
         molded_images, image_metas, windows = self.mold_inputs(images)
 
         detections, mrcnn_class, mrcnn_mask, mrcnn_class_logits, rpn_roi, align_result = \
-            self.keras_model_shortcut.predict(
+            self.model_shortcut.predict(
                 [molded_images, image_metas, rpn_rois], verbose=0)
         results = []
         for i, image in enumerate(images):
@@ -994,7 +1008,6 @@ class MaskRCNN():
         windows = []
         for image in images:
             # Resize image
-            # TODO: move resizing to mold_image()
             molded_image, window, scale, padding, crop = utils.resize_image(
                 image,
                 min_dim=self.config.IMAGE_MIN_DIM,
@@ -1082,6 +1095,28 @@ class MaskRCNN():
 
         return boxes, class_ids, scores, full_masks
 
+    def get_anchors(self, image_shape):
+        """Returns anchor pyramid for the given image size."""
+        backbone_shapes = compute_backbone_shapes(self.config, image_shape)
+        # Cache anchors and reuse if image shape is the same
+        if not hasattr(self, "_anchor_cache"):
+            self._anchor_cache = {}
+        if not tuple(image_shape) in self._anchor_cache:
+            # Generate Anchors
+            # A list of (y,x,w,h)
+            a = utils.generate_pyramid_anchors(
+                self.config.RPN_ANCHOR_SCALES,
+                self.config.RPN_ANCHOR_RATIOS,
+                backbone_shapes,
+                self.config.BACKBONE_STRIDES,
+                self.config.RPN_ANCHOR_STRIDE)
+            # Keep a copy of the latest anchors in pixel coordinates because
+            # it's used in inspect_model notebooks.
+            self.anchors = a
+            # Normalize coordinates
+            self._anchor_cache[tuple(image_shape)] = utils.norm_boxes(a, image_shape[:2])
+        return self._anchor_cache[tuple(image_shape)]
+
     def load_weights(self, filepath, by_name=False, exclude=None):
         """Modified version of the correspoding Keras function with
         the addition of multi-GPU support and the ability to exclude
@@ -1102,7 +1137,7 @@ class MaskRCNN():
 
         # In multi-GPU training, we wrap the model. Get layers
         # of the inner model because they have the weights.
-        keras_model = self.keras_model
+        keras_model = self.model
         layers = keras_model.inner_model.layers if hasattr(keras_model, "inner_model") \
             else keras_model.layers
 
@@ -1115,7 +1150,7 @@ class MaskRCNN():
         else:
             topology.load_weights_from_hdf5_group(f, layers)
 
-        keras_model = self.keras_model_shortcut
+        keras_model = self.model_shortcut
         layers = keras_model.inner_model.layers if hasattr(keras_model, "inner_model") \
             else keras_model.layers
         layers = filter(lambda l: l.name not in ['ROI', 'rpn_bbox', 'rpn_bbox_loss', 'rpn_class', 'rpn_class_logits',
@@ -1127,6 +1162,3 @@ class MaskRCNN():
 
         if hasattr(f, 'close'):
             f.close()
-
-        # Update the log directory
-        self.set_log_dir(filepath)
