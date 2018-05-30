@@ -9,6 +9,7 @@ from __future__ import unicode_literals
 from __future__ import division
 import os
 import sys
+import numpy as np
 
 ROOT_DIR = os.path.abspath("../")
 
@@ -16,10 +17,8 @@ sys.path.append(ROOT_DIR)
 sys.path.append(os.path.join(ROOT_DIR, "samples/coco/"))
 
 from mrcnn import vu
-from mrcnn import model
+from mrcnn import model_lite
 from mrcnn import utils
-from mrcnn import visualize
-import numpy as np
 
 import coco
 
@@ -46,8 +45,7 @@ config = InferenceConfig()
 config.display()
 
 # Create model object in inference mode
-model_inf = model.MaskRCNN(
-    mode="inference", model_dir=MODEL_DIR, config=config)
+model_inf = model_lite.MaskRCNN(model_dir=MODEL_DIR, config=config)
 
 # Load weights trained with MS-COCO
 model_inf.load_weights(COCO_MODEL_PATH, by_name=True)
@@ -81,16 +79,16 @@ for frame_index in range(num_frames):
     print('*' * 20)
     print(frame_index)
     _, image, _ = video_reader.nextFrame()
-    result = model_inf.detect([image], verbose=1)
+    result = model_inf.detect([image])
     roi_touse = result[1]
-    result2 = model_inf.detect_shortcut([image], roi_touse, verbose=1)
+    result2 = model_inf.detect_shortcut([image], roi_touse)
+    roi_used = result2[1]
 
-    mrcnn_class_logits = result[3]
-    align_result = result[4]
-    mrcnn_class_logits2 = result2[3]
-    align_result2 = result2[4]
+    align_result = result[2]
+    align_result2 = result2[2]
 
-
+    print("Is the level assignment same? ", np.allclose(align_result, align_result2))
+    print("Is the rpn_roi used in the two networks same? ", np.allclose(roi_touse, roi_used))
     break
 
     # r = result[0]
