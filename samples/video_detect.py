@@ -19,6 +19,7 @@ from mrcnn import vu
 from mrcnn import model
 from mrcnn import utils
 from mrcnn import visualize
+import numpy as np
 
 import coco
 
@@ -51,7 +52,7 @@ model_inf = model.MaskRCNN(
 # Load weights trained with MS-COCO
 model_inf.load_weights(COCO_MODEL_PATH, by_name=True)
 
-# COCO Class names
+# COCO Class names. A total of 81 classes including background.
 # Index of the class in the list is its ID. For example, to get ID of
 # the teddy bear class, use: class_names.index('teddy bear')
 class_names = ['BG', 'person', 'bicycle', 'car', 'motorcycle', 'airplane',
@@ -81,6 +82,17 @@ for frame_index in range(num_frames):
     print(frame_index)
     _, image, _ = video_reader.nextFrame()
     result = model_inf.detect([image], verbose=1)
-    r = result[0]
-    visualize.display_instances(image, r['rois'], r['masks'], r[
-        'class_ids'], class_names, str(frame_index) + '.jpg', r['scores'])
+    roi_touse = result[1]
+    result2 = model_inf.detect_shortcut([image], roi_touse, verbose=1)
+
+    mrcnn_class_logits = result[3]
+    align_result = result[4]
+    mrcnn_class_logits2 = result2[3]
+    align_result2 = result2[4]
+
+
+    break
+
+    # r = result[0]
+    # visualize.display_instances(image, r['rois'], r['masks'], r[
+    #     'class_ids'], class_names, str(frame_index) + '.jpg', r['scores'])

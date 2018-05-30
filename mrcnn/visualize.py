@@ -168,7 +168,7 @@ def display_instances(image, boxes, masks, class_ids, class_names, file_name,
     auto_show = False
     if auto_show:
         plt.show()
-    plt.savefig(os.path.join(ROOT_DIR, 'samples/out_img', file_name))
+    # plt.savefig(os.path.join(ROOT_DIR, 'samples/out_img', file_name))
 
 
 def display_differences(image,
