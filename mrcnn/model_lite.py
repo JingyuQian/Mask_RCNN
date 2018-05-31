@@ -1,4 +1,11 @@
-# Minimum requirement to run the inference code
+#! usr/bin/env python
+
+# Mask R-CNN model implementation with TensorFlow
+# Code adapted from Matterport -- https://github.com/matterport/Mask_RCNN
+# The following is the minimum requirement to run the inference model
+
+# Author: Jingyu Qian
+# Date last modified: May 30, 2018
 
 import keras.backend as K
 import keras.layers as KL
@@ -980,8 +987,7 @@ class MaskRCNN(object):
                          outputs=[detections,
                                   mrcnn_class,
                                   mrcnn_mask,
-                                  mrcnn_class_logits,
-                                  input_rpn_rois],
+                                  mrcnn_class_logits],
                          name='mask_rcnn')
 
         # Add multi-GPU support.
@@ -1037,7 +1043,7 @@ class MaskRCNN(object):
     def detect_shortcut(self, images, rpn_rois):
         molded_images, image_metas, windows = self.mold_inputs(images)
 
-        detections, mrcnn_class, mrcnn_mask, mrcnn_class_logits, rpn_roi = \
+        detections, mrcnn_class, mrcnn_mask, mrcnn_class_logits = \
             self.model_shortcut.predict(
                 [molded_images, image_metas, rpn_rois], verbose=0)
         results = []
@@ -1052,7 +1058,7 @@ class MaskRCNN(object):
                 "scores": final_scores,
                 "masks": final_masks,
             })
-        return results, rpn_roi
+        return results
 
     def mold_inputs(self, images):
         """Takes a list of images and modifies them to the format expected

@@ -103,6 +103,8 @@ class VideoReader(object):
         print('Video piece written to {}'.format(full_path))
         return full_path
 
+    def release(self):
+        self.handle.release()
 
 def get_video_from_youtube(video_address, fmt='mp4', save_dir=None):
     """

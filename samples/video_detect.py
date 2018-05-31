@@ -2,27 +2,28 @@
 
 # Sample code to detect instances in video
 # Author: Jingyu Qian
-
+# Last modified: May 30, 2018
 
 from __future__ import print_function
 from __future__ import unicode_literals
 from __future__ import division
 import os
 import sys
-import numpy as np
+import time
+import json
 
+# github root directory
 ROOT_DIR = os.path.abspath("../")
 
+# add search path
 sys.path.append(ROOT_DIR)
 sys.path.append(os.path.join(ROOT_DIR, "samples/coco/"))
-
 from mrcnn import vu
 from mrcnn import model_lite
 from mrcnn import utils
-
 import coco
 
-# Path to the save logs and trained model
+# Path to the save logs and trained model. Used for training.
 MODEL_DIR = os.path.join(ROOT_DIR, "logs")
 # Path to the trained weights file
 COCO_MODEL_PATH = os.path.join(ROOT_DIR, "mask_rcnn_coco.h5")
@@ -32,6 +33,7 @@ if not os.path.exists(COCO_MODEL_PATH):
 
 # Path to the saved video file
 VIDEO_DIR = ROOT_DIR
+VIDEO_NAME = os.path.join(ROOT_DIR, 'wanda_20180325_ch07_part5.mp4')
 
 
 class InferenceConfig(coco.CocoConfig):
@@ -39,6 +41,8 @@ class InferenceConfig(coco.CocoConfig):
     # one image at a time. Batch size = GPU_COUNT * IMAGES_PER_GPU
     GPU_COUNT = 1
     IMAGES_PER_GPU = 1
+    # The number of frames to run on shortcut model after an rpn_roi extraction
+    SHORTCUT_FRAMES = 4
 
 
 config = InferenceConfig()
@@ -46,8 +50,6 @@ config.display()
 
 # Create model object in inference mode
 model_inf = model_lite.MaskRCNN(model_dir=MODEL_DIR, config=config)
-
-# Load weights trained with MS-COCO
 model_inf.load_weights(COCO_MODEL_PATH, by_name=True)
 
 # COCO Class names. A total of 81 classes including background.
@@ -69,28 +71,49 @@ class_names = ['BG', 'person', 'bicycle', 'car', 'motorcycle', 'airplane',
                'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors',
                'teddy bear', 'hair drier', 'toothbrush']
 
-VIDEO_NAME = './cat.mp4'
 
 # Create a video_reader
 video_reader = vu.VideoReader(VIDEO_NAME)
 num_frames = video_reader.getTotalNumberOfFrames()
-
+cycle = config.SHORTCUT_FRAMES + 1
+roi_touse = None
+final_result = []
 for frame_index in range(num_frames):
     print('*' * 20)
     print(frame_index)
     _, image, _ = video_reader.nextFrame()
-    result = model_inf.detect([image])
-    roi_touse = result[1]
-    result2 = model_inf.detect_shortcut([image], roi_touse)
-    roi_used = result2[1]
+    temp_result = {}
+    # Run full model. Result is a list: [dict, proposals]
+    if not frame_index % (config.SHORTCUT_FRAMES + 1):
+        result = model_inf.detect([image])
+        rois = result[0]['rois']
+        class_ids = result[0]['class_ids']
+        scores = result[0]['scores']
+        masks = result[0]['masks']
+        roi_touse = result[1]
+    else:  # Run shortcut model. Result is a dictionary
+        assert roi_touse is not None
+        result = model_inf.detect_shortcut([image], roi_touse)
+        rois = result['rois']
+        class_ids = result['class_ids']
+        scores = result['final_scores']
+        masks = result['final_masks']
+    for i, j, k in zip(class_ids, rois, scores):
+        temp_result["image_id"] = int(frame_index)
+        temp_result["category_id"] = int(i)
+        x = j[1]
+        y = j[0]
+        width = j[3] - j[1]
+        height = j[2] - j[0]
+        temp_result["bbox"] = [x, y, width, height]
+        temp_result["score"] = k
+    final_result.append(temp_result)
+video_reader.release()
+with open('new_model.json','w') as file:
+    json.dump(final_result, file)
 
-    align_result = result[2]
-    align_result2 = result2[2]
+sys.exit('Exiting the program.')
 
-    print("Is the level assignment same? ", np.allclose(align_result, align_result2))
-    print("Is the rpn_roi used in the two networks same? ", np.allclose(roi_touse, roi_used))
-    break
-
-    # r = result[0]
-    # visualize.display_instances(image, r['rois'], r['masks'], r[
-    #     'class_ids'], class_names, str(frame_index) + '.jpg', r['scores'])
+      # r = result[0]
+      # visualize.display_instances(image, r['rois'], r['masks'], r[
+      #     'class_ids'], class_names, str(frame_index) + '.jpg', r['scores'])
