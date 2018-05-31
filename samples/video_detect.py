@@ -100,15 +100,15 @@ for frame_index in range(num_frames):
         scores = result[0]['scores']
         masks = result[0]['masks']
     for i, j, k in zip(class_ids, rois, scores):
-        temp_result["image_id"] = frame_index
-        temp_result["category_id"] = np.asscalar(i)
-        x = np.asscalar(j[1])
-        y = np.asscalar(j[0])
-        width = np.asscalar(j[3] - j[1])
-        height = np.asscalar(j[2] - j[0])
-        temp_result["bbox"] = [x, y, width, height]
-        temp_result["score"] = np.asscalar(k)
-        if temp_result:
+        if i == 1:
+            temp_result["image_id"] = frame_index
+            temp_result["category_id"] = 0
+            x = np.asscalar(j[1])
+            y = np.asscalar(j[0])
+            width = np.asscalar(j[3] - j[1])
+            height = np.asscalar(j[2] - j[0])
+            temp_result["bbox"] = [x, y, width, height]
+            temp_result["score"] = np.asscalar(k)
             final_result.append(temp_result)
 video_reader.release()
 with open('new_model.json', 'w') as file:
