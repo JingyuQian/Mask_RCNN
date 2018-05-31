@@ -109,7 +109,7 @@ for frame_index in range(num_frames):
             height = np.asscalar(j[2] - j[0])
             temp_result["bbox"] = [x, y, width, height]
             temp_result["score"] = np.asscalar(k)
-            final_result.append(temp_result)
+            final_result.append(temp_result.copy())
 video_reader.release()
 with open('new_model.json', 'w') as file:
     json.dump(final_result, file)
