@@ -518,7 +518,6 @@ class PyramidROIAlign(KE.Layer):
             # Here we use the simplified approach of a single value per bin,
             # which is how it's done in tf.crop_and_resize()
             # Result: [batch * num_boxes, pool_height, pool_width, channels]
-            print(feature_maps[i])
             pooled.append(tf.image.crop_and_resize(
                 feature_maps[i], level_boxes, box_indices, self.pool_shape,
                 method="bilinear"))
@@ -820,7 +819,6 @@ class MaskRCNN(object):
 
     def build(self, config):
         h, w = config.IMAGE_SHAPE[:2]
-        print(h, w)
         if h / 2 ** 6 != int(h / 2 ** 6) or w / 2 ** 6 != int(w / 2 ** 6):
             raise Exception("Image size must be dividable by 2 at least"
                             " 6 times to avoid fractions"

@@ -11,6 +11,7 @@ import os
 import sys
 import time
 import json
+import numpy as np
 
 # github root directory
 ROOT_DIR = os.path.abspath("../")
@@ -71,10 +72,10 @@ class_names = ['BG', 'person', 'bicycle', 'car', 'motorcycle', 'airplane',
                'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors',
                'teddy bear', 'hair drier', 'toothbrush']
 
-
 # Create a video_reader
 video_reader = vu.VideoReader(VIDEO_NAME)
 num_frames = video_reader.getTotalNumberOfFrames()
+print('Total number of frames: {}'.format(num_frames))
 cycle = config.SHORTCUT_FRAMES + 1
 roi_touse = None
 final_result = []
@@ -84,36 +85,37 @@ for frame_index in range(num_frames):
     _, image, _ = video_reader.nextFrame()
     temp_result = {}
     # Run full model. Result is a list: [dict, proposals]
-    if not frame_index % (config.SHORTCUT_FRAMES + 1):
+    if not frame_index % cycle:
         result = model_inf.detect([image])
-        rois = result[0]['rois']
-        class_ids = result[0]['class_ids']
-        scores = result[0]['scores']
-        masks = result[0]['masks']
+        rois = result[0][0]['rois']
+        class_ids = result[0][0]['class_ids']
+        scores = result[0][0]['scores']
+        masks = result[0][0]['masks']
         roi_touse = result[1]
     else:  # Run shortcut model. Result is a dictionary
         assert roi_touse is not None
         result = model_inf.detect_shortcut([image], roi_touse)
-        rois = result['rois']
-        class_ids = result['class_ids']
-        scores = result['final_scores']
-        masks = result['final_masks']
+        rois = result[0]['rois']
+        class_ids = result[0]['class_ids']
+        scores = result[0]['scores']
+        masks = result[0]['masks']
     for i, j, k in zip(class_ids, rois, scores):
-        temp_result["image_id"] = int(frame_index)
-        temp_result["category_id"] = int(i)
-        x = j[1]
-        y = j[0]
-        width = j[3] - j[1]
-        height = j[2] - j[0]
+        temp_result["image_id"] = frame_index
+        temp_result["category_id"] = np.asscalar(i)
+        x = np.asscalar(j[1])
+        y = np.asscalar(j[0])
+        width = np.asscalar(j[3] - j[1])
+        height = np.asscalar(j[2] - j[0])
         temp_result["bbox"] = [x, y, width, height]
-        temp_result["score"] = k
-    final_result.append(temp_result)
+        temp_result["score"] = np.asscalar(k)
+        if temp_result:
+            final_result.append(temp_result)
 video_reader.release()
-with open('new_model.json','w') as file:
+with open('new_model.json', 'w') as file:
     json.dump(final_result, file)
 
 sys.exit('Exiting the program.')
 
-      # r = result[0]
-      # visualize.display_instances(image, r['rois'], r['masks'], r[
-      #     'class_ids'], class_names, str(frame_index) + '.jpg', r['scores'])
+# r = result[0]
+# visualize.display_instances(image, r['rois'], r['masks'], r[
+#     'class_ids'], class_names, str(frame_index) + '.jpg', r['scores'])
