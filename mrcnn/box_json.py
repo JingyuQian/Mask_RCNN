@@ -21,9 +21,12 @@ def loadJson(path_to_json):
         data = json.load(fp)
     ids = set([i['image_id'] for i in data])
     numFrames = len(ids)
-    list_divide = [[]] * numFrames
+    list_divide = {}
     for i in data:
-        list_divide[i['image_id']].append(i)
+        frame_id = i['image_id']
+        if not list_divide.get(frame_id, 0):
+            list_divide[frame_id] = []
+        list_divide[frame_id].append(i.copy())
     return list_divide, numFrames
 
 
@@ -35,6 +38,7 @@ def draw_bbox(vh, bbox_list, num_to_draw, out_dir=None):
     assert num_to_draw <= vh.get(cv2.CAP_PROP_FRAME_COUNT)
     for index in range(num_to_draw):
         success, image = vh.read()
+        image = image[:, :, ::-1]
         assert success, "Read {}-th frame failed".format(index)
         frame_instances = bbox_list[index]
 
@@ -46,17 +50,19 @@ def draw_bbox(vh, bbox_list, num_to_draw, out_dir=None):
         for instance in frame_instances:
             x1 = instance['bbox'][0]
             y1 = instance['bbox'][1]
-            width = instance['bbox'][2]
-            height = instance['bbox'][3]
-            p = patches.Rectangle((x1, y1), width, height, linewidth=2,
+            w = instance['bbox'][2]
+            h = instance['bbox'][3]
+            p = patches.Rectangle((x1, y1), w, h, linewidth=2,
                                   alpha=0.7, linestyle="dashed", edgecolor=colors, facecolor='none')
             ax.add_patch(p)
         ax.imshow(masked_image.astype(np.uint8))
-        plt.show()
-        wait = input()
-        plt.close()
+        # plt.show()
+
         if out_dir is not None:
-            plt.savefig(str(index) + '.jpg', dpi=220)
+            save_name = os.path.abspath('../samples/out_img')
+            save_name = os.path.join(save_name ,str(index)+'.jpg')
+            plt.savefig(save_name, dpi=220)
+        plt.close()
 
 
 if __name__ == '__main__':
@@ -72,4 +78,4 @@ if __name__ == '__main__':
     vid_reader = loadVideo(args.video)
     print('Loading coco json {}'.format(os.path.abspath(args.json)))
     box_list, N = loadJson(args.json)
-    draw_bbox(vid_reader, box_list, N)
+    draw_bbox(vid_reader, box_list, N, out_dir='')
