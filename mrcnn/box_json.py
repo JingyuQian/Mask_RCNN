@@ -198,10 +198,10 @@ def draw_match_to_sequence(vh, det_list, gt_list,
             xd, yd, wd, hd = dets_frame[det]['bbox']
             xt, yt, wt, ht = gts_frame[gt]['bbox']
             p = patches.Rectangle((xd, yd), wd, hd, linewidth=0.5,
-                                  alpha=0.9, linestyle='solid', edgecolor=det_color, facecolor='none')
+                                  alpha=0.9, linestyle='dashed', edgecolor=det_color, facecolor='none')
             ax.add_patch(p)
             p = patches.Rectangle((xt, yt), wt, ht, linewidth=0.5,
-                                  alpha=0.9, linestyle='dashed', edgecolor=gt_color, facecolor='none')
+                                  alpha=0.9, linestyle='solid', edgecolor=gt_color, facecolor='none')
             ax.add_patch(p)
             p = patches.Arrow(xd, yd, xt - xd, yt - yd,
                               width=0.5, color=arrow_color)
@@ -274,7 +274,7 @@ def draw_bbox_to_sequence(vh, det_list, gt_list, num_to_draw=None, auto=True, ou
             for instance in frame_instances:
                 x1, y1, w, h = instance['bbox']
                 p = patches.Rectangle((x1, y1), w, h, linewidth=0.5,
-                                      alpha=0.9, linestyle="dashed", edgecolor=gt_color, facecolor='none')
+                                      alpha=0.9, linestyle="solid", edgecolor=gt_color, facecolor='none')
                 ax.add_patch(p)
         ax.imshow(masked_image.astype(np.uint8))
 
